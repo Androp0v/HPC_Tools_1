@@ -6,10 +6,29 @@
 	objectVersion = 56;
 	objects = {
 
+/* Begin PBXFileReference section */
+		C5C4D1AE2ABF3FDD000DC237 /* timer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = timer.h; path = HPC_Tools_1/timer.h; sourceTree = "<group>"; };
+		C5C4D1AF2ABF3FDD000DC237 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; name = README.md; path = HPC_Tools_1/README.md; sourceTree = "<group>"; };
+		C5C4D1B02ABF3FDD000DC237 /* timer.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = timer.c; path = HPC_Tools_1/timer.c; sourceTree = "<group>"; };
+		C5C4D1B12ABF3FDD000DC237 /* dgesv.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = dgesv.h; path = HPC_Tools_1/dgesv.h; sourceTree = "<group>"; };
+		C5C4D1B22ABF3FDD000DC237 /* main.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = main.c; path = HPC_Tools_1/main.c; sourceTree = "<group>"; };
+		C5C4D1B32ABF3FDD000DC237 /* dgesv.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = dgesv.c; path = HPC_Tools_1/dgesv.c; sourceTree = "<group>"; };
+		C5C4D1B42ABF3FDD000DC237 /* makefile */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.make; name = makefile; path = HPC_Tools_1/makefile; sourceTree = "<group>"; };
+		C5C4D1B52ABF3FDD000DC237 /* task1.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; name = task1.md; path = HPC_Tools_1/task1.md; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
 /* Begin PBXGroup section */
 		C5C4D1A32ABF3F79000DC237 = {
 			isa = PBXGroup;
 			children = (
+				C5C4D1B32ABF3FDD000DC237 /* dgesv.c */,
+				C5C4D1B12ABF3FDD000DC237 /* dgesv.h */,
+				C5C4D1B22ABF3FDD000DC237 /* main.c */,
+				C5C4D1B42ABF3FDD000DC237 /* makefile */,
+				C5C4D1AF2ABF3FDD000DC237 /* README.md */,
+				C5C4D1B52ABF3FDD000DC237 /* task1.md */,
+				C5C4D1B02ABF3FDD000DC237 /* timer.c */,
+				C5C4D1AE2ABF3FDD000DC237 /* timer.h */,
 			);
 			sourceTree = "<group>";
 		};
@@ -23,6 +42,7 @@
 			buildPhases = (
 			);
 			buildToolPath = /usr/bin/make;
+			buildWorkingDirectory = "/Users/andro/Universidad/UDC/HPC Tools/HPC_Tools_1/HPC_Tools_1";
 			dependencies = (
 			);
 			name = HPC_Tools_1;
