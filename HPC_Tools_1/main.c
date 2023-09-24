@@ -61,7 +61,6 @@ int main(int argc, char *argv[]) {
     
     if (argc < 2) {
         printf("You need to provide a matrix size (e.g. 1024 for use 1024x1024 matrices)\n");
-
         return 1;
     }
     
@@ -95,15 +94,16 @@ int main(int argc, char *argv[]) {
     //
     timestamp(&start);
 
-    info = my_dgesv(n, nrhs, a, b); // add/change the parameters according to your implementation needs
+    info = my_dgesv(n, a, b); // Add/change the parameters according to your implementation needs
 
     timestamp(&now);
     printf("Time taken by my dgesv solver: %ld ms\n", diff_milli(&start, &now));
 
-    if (check_result(bref, b, size) == 1)
-    printf("Result is ok!\n");
-    else
-    printf("Result is wrong!\n");
+    if (check_result(bref, b, size) == 1) {
+        printf("Result is ok!\n");
+    } else {
+        printf("Result is wrong!\n");
+    }
     
     return 0;
 }
