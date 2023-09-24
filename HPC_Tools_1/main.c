@@ -1,4 +1,3 @@
-
 #if defined(__APPLE__)
     #include <cblas.h>
     #include <lapacke.h>
