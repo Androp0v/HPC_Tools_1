@@ -4,7 +4,7 @@ ifeq ($(OS), Darwin)
 
 # macOS + Homebrew
 LDFLAGS = -L/opt/homebrew/opt/openblas/lib
-CPPFLAGS = -O3 -I/opt/homebrew/opt/openblas/include
+CPPFLAGS = -march=native -O3 -I/opt/homebrew/opt/openblas/include
 dgesv: dgesv.o timer.o main.o /opt/homebrew/opt/openblas/lib/libopenblas.a
 	$(CC) dgesv.o timer.o main.o $(LDFLAGS) -lopenblas -o dgesv
 	
