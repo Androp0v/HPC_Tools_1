@@ -35,6 +35,7 @@ int my_dgesv(int n, double *a, double *b) {
     
     #if defined(USE_APPLE_DISPATCH)
     dispatch_queue_t concurrentQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
+    int dispatch_stride = 64;
     #endif
     
     for(int i=0; i<n; i++) {
@@ -77,10 +78,27 @@ int my_dgesv(int n, double *a, double *b) {
         // On Apple platforms, execute concurrently in all available cores
         // using Apple's dispatch library.
         #if defined(USE_APPLE_DISPATCH)
-        dispatch_apply(n, concurrentQueue, ^(size_t ll) {
+        dispatch_apply(n / dispatch_stride, concurrentQueue, ^(size_t idx) {
+            int max = (idx + 1) * dispatch_stride;
+            if (max > n) {
+                max = n;
+            }
+            for(int ll = idx * dispatch_stride; ll<max; ll++) {
+                if (ll != icol) {
+                    double dum = a[ll*n + icol];
+                    a[ll*n + icol] = 0.0;
+                    #pragma clang loop vectorize(enable) interleave(enable)
+                    for (int l=0; l<n; l++) {
+                        a[ll*n + l] -= a[icol*n + l] * dum;
+                        b[ll*n + l] -= b[icol*n + l] * dum;
+                    }
+                }
+            }
+        });
+        // On non-Apple platforms, use OpenMP to parallelize the loop instead.
         #else
+        #pragma omp parallel for
         for(int ll=0; ll<n; ll++) {
-        #endif
             if (ll != icol) {
                 double dum = a[ll*n + icol];
                 a[ll*n + icol] = 0.0;
@@ -90,9 +108,6 @@ int my_dgesv(int n, double *a, double *b) {
                     b[ll*n + l] -= b[icol*n + l] * dum;
                 }
             }
-        #if defined(USE_APPLE_DISPATCH)
-        });
-        #else
         }
         #endif
     }
