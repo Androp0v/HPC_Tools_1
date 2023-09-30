@@ -16,3 +16,7 @@ Compiled using LLVM + Clang 14.0.3 (Apple's version, bundled with Xcode). Becaus
 If an Apple platform is detected (`#if defined(__APPLE__)` for C source files, `ifeq ($(OS), Darwin)` for the makefile), the code will use Apple's Grand Central Dispatch (`<dispatch/dispatch.h>`) for a slight multicore boost in one of the loops.
 
 The repo contains a simple Xcode project configured with an external build system preset in order to ensure the makefile is used for compilation.
+
+# Bibliography
+1. _Numerical Recipes in C_, Chapter 2.1.
+2. _CS 267 Dense Linear Algebra: Parallel Gaussian Elimination_, University of California, Berkeley [link](https://people.eecs.berkeley.edu/~demmel/cs267_Spr14/Lectures/lecture13_densela_2_jwd14_4pp.pdf).
