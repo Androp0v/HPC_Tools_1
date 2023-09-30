@@ -21,12 +21,10 @@ void swap(double *pa, double *pb) {
 
 int my_dgesv(int n, double *a, double *b) {
     
-    int *indxc = generate_int_vector(n);
-    int *indxr = generate_int_vector(n);
     int *ipiv = generate_int_vector(n);
     
     double big, dum, pivinv;
-    int icol, irow;
+    int imax;
         
     #pragma clang loop vectorize(enable) interleave(enable)
     for(int j=0; j<n; j++) {
@@ -41,40 +39,38 @@ int my_dgesv(int n, double *a, double *b) {
     for(int i=0; i<n; i++) {
         big = 0.0;
         for (int j=0; j<n; j++) {
-            if (ipiv[j] != 1) {
-                for(int k=0; k<n; k++) {
-                    if (ipiv[k] == 0) {
-                        if (fabs(a[j*n + k]) >= big) {
-                            big = fabs(a[j*n + k]);
-                            irow = j;
-                            icol = k;
-                        }
-                    }
+            if (ipiv[j] == 0) {
+                // Search for pivot element only below the current row
+                if (fabs(a[j*n + j]) >= big) {
+                    big = fabs(a[j*n + j]);
+                    imax = j;
                 }
             }
         }
-        ++(ipiv[icol]);
-        if (irow != icol) {
+        ++(ipiv[imax]);
+                
+        // Check whether rows need to be swapped
+        if (i != imax) {
+            // Swap rows...
             for(int l=0; l<n; l++) {
-                swap(&a[irow*n + l], &a[icol*n + l]);
-                swap(&b[irow*n + l], &b[icol*n + l]);
+                swap(&a[imax*n + l], &a[imax*n + l]);
+                swap(&b[imax*n + l], &b[imax*n + l]);
             }
         }
-        indxr[i] = irow;
-        indxc[i] = icol;
-        if (a[icol*n + icol] == 0.0) {
+
+        if (a[imax*n + imax] == 0.0) {
             printf("Singular matrix");
             exit(0);
         }
-        pivinv = 1.0 / a[icol*n + icol];
-        a[icol*n + icol] = 1.0;
+        pivinv = 1.0 / a[imax*n + imax];
+        a[imax*n + imax] = 1.0;
         
         #pragma clang loop vectorize(enable) interleave(enable)
         for(int l=0; l<n; l++) {
-            a[icol*n + l] *= pivinv;
-            b[icol*n + l] *= pivinv;
+            a[imax*n + l] *= pivinv;
+            b[imax*n + l] *= pivinv;
         }
-        
+                
         // On Apple platforms, execute concurrently in all available cores
         // using Apple's dispatch library.
         #if defined(USE_APPLE_DISPATCH)
@@ -84,13 +80,13 @@ int my_dgesv(int n, double *a, double *b) {
                 max = n;
             }
             for(int ll = idx * dispatch_stride; ll<max; ll++) {
-                if (ll != icol) {
-                    double dum = a[ll*n + icol];
-                    a[ll*n + icol] = 0.0;
+                if (ll != imax) {
+                    double dum = a[ll*n + imax];
+                    a[ll*n + imax] = 0.0;
                     #pragma clang loop vectorize(enable) interleave(enable)
                     for (int l=0; l<n; l++) {
-                        a[ll*n + l] -= a[icol*n + l] * dum;
-                        b[ll*n + l] -= b[icol*n + l] * dum;
+                        a[ll*n + l] -= a[imax*n + l] * dum;
+                        b[ll*n + l] -= b[imax*n + l] * dum;
                     }
                 }
             }
@@ -99,25 +95,17 @@ int my_dgesv(int n, double *a, double *b) {
         #else
         #pragma omp parallel for
         for(int ll=0; ll<n; ll++) {
-            if (ll != icol) {
-                double dum = a[ll*n + icol];
-                a[ll*n + icol] = 0.0;
+            if (ll != imax) {
+                double dum = a[ll*n + imax];
+                a[ll*n + imax] = 0.0;
                 #pragma clang loop vectorize(enable) interleave(enable)
                 for (int l=0; l<n; l++) {
-                    a[ll*n + l] -= a[icol*n + l] * dum;
-                    b[ll*n + l] -= b[icol*n + l] * dum;
+                    a[ll*n + l] -= a[imax*n + l] * dum;
+                    b[ll*n + l] -= b[imax*n + l] * dum;
                 }
             }
         }
         #endif
-    }
-
-    for(int l=n-1; l>=0; l--) {
-        if (indxr[l] != indxc[l]) {
-            for(int k=0; k<n; k++) {
-                swap(&a[k*n + indxr[l]], &a[k*n + indxc[l]]);
-            }
-        }
     }
         
     return 0;
