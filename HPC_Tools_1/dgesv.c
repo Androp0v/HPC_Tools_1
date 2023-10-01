@@ -88,16 +88,20 @@ int my_dgesv(int n, double *a, double *b) {
         #if defined(USE_APPLE_DISPATCH)
         int number_of_threadgroups = ((n - (k+1)) / dispatch_stride) + 1;
         dispatch_apply(number_of_threadgroups, concurrent_queue, ^(size_t idx) {
-            int max = k + 1 + (idx + 1) * dispatch_stride;
-            if (max > n) {
-                max = n;
+            int start = k + 1 + idx * dispatch_stride;
+            int end = k + 1 + (idx + 1) * dispatch_stride;
+            if (end > n) {
+                end = n;
             }
-            for (int i = k + 1 + (idx * dispatch_stride); i<max; i++) {
-                double temp = a[i*n + k] / a[k*n + k];
+            for (int i = start; i<end; i++) {
+                double dum = a[i*n + k] / a[k*n + k];
+                #pragma clang loop vectorize(enable) interleave(enable)
+                for (int j = k+1; j<n; j++) {
+                    a[i*n + j] -= a[k*n + j] * dum;
+                }
                 #pragma clang loop vectorize(enable) interleave(enable)
                 for (int j = 0; j<n; j++) {
-                    a[i*n + j] -= temp * a[k*n + j];
-                    b[i*n + j] -= temp * b[k*n + j];
+                    b[i*n + j] -= b[k*n + j] * dum;
                 }
             }
         });
@@ -106,8 +110,10 @@ int my_dgesv(int n, double *a, double *b) {
         #pragma omp parallel for
         for (int i = k+1; i<n; i++) {
             temp = a[i*n + k] / a[k*n + k];
-            for (int j = 0; j<n; j++) {
+            for (int j = k+1; j<n; j++) {
                 a[i*n + j] -= temp * a[k*n + j];
+            }
+            for (int j = 0; j<n; j++) {
                 b[i*n + j] -= temp * b[k*n + j];
             }
         }
@@ -119,11 +125,11 @@ int my_dgesv(int n, double *a, double *b) {
     // dispatch library.
     #if defined(USE_APPLE_DISPATCH)
     dispatch_apply((n / dispatch_stride) + 1, concurrent_queue, ^(size_t idx) {
-        int max = (idx + 1) * dispatch_stride;
-        if (max > n) {
-            max = n;
+        int end = (idx + 1) * dispatch_stride;
+        if (end > n) {
+            end = n;
         }
-        for (int k = idx * dispatch_stride; k < max; k++) {
+        for (int k = idx * dispatch_stride; k < end; k++) {
             for (int i=n-1; i>=0; i--) {
                 double sum = b[i*n + k];
                 #pragma clang loop vectorize(enable) interleave(enable)
