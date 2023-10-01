@@ -48,15 +48,6 @@ int my_dgesv(int n, double *a, double *b) {
             }
         }
         ++(ipiv[imax]);
-                
-        // Check whether rows need to be swapped
-        if (i != imax) {
-            // Swap rows...
-            for(int l=0; l<n; l++) {
-                swap(&a[imax*n + l], &a[imax*n + l]);
-                swap(&b[imax*n + l], &b[imax*n + l]);
-            }
-        }
 
         if (a[imax*n + imax] == 0.0) {
             printf("Singular matrix");
@@ -74,7 +65,7 @@ int my_dgesv(int n, double *a, double *b) {
         // On Apple platforms, execute concurrently in all available cores
         // using Apple's dispatch library.
         #if defined(USE_APPLE_DISPATCH)
-        dispatch_apply(n / dispatch_stride, concurrentQueue, ^(size_t idx) {
+        dispatch_apply((n / dispatch_stride) + 1, concurrentQueue, ^(size_t idx) {
             int max = (idx + 1) * dispatch_stride;
             if (max > n) {
                 max = n;
