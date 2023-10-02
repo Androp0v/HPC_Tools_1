@@ -107,12 +107,16 @@ int my_dgesv(int n, double *a, double *b) {
         // MARK: - Elimination
         
         os_signpost_interval_begin(log_handle, inner_elimination_id, "Inner elimination loop");
+        
         double pivot_value = a[k*n + k];
         
         // On Apple platforms, execute concurrently in all available cores using Apple's
         // dispatch library.
         #if defined(USE_APPLE_DISPATCH)
-        int number_of_threadgroups = ((n - (k+1)) / dispatch_stride) + 1;
+        int number_of_threadgroups = (n - (k+1)) / dispatch_stride;
+        if ((n - (k+1)) % dispatch_stride != 0) {
+            number_of_threadgroups += 1;
+        }
         dispatch_apply(number_of_threadgroups, concurrent_queue, ^(size_t idx) {
             int start = k + 1 + idx * dispatch_stride;
             int end = k + 1 + (idx + 1) * dispatch_stride;
@@ -153,7 +157,11 @@ int my_dgesv(int n, double *a, double *b) {
     // On Apple platforms, execute concurrently in all available cores using Apple's
     // dispatch library.
     #if defined(USE_APPLE_DISPATCH)
-    dispatch_apply((n / dispatch_stride) + 1, concurrent_queue, ^(size_t idx) {
+    int number_of_threadgroups = n / dispatch_stride;
+    if (n % dispatch_stride != 0) {
+        number_of_threadgroups += 1;
+    }
+    dispatch_apply(number_of_threadgroups, concurrent_queue, ^(size_t idx) {
         int end = (idx + 1) * dispatch_stride;
         if (end > n) {
             end = n;
@@ -184,6 +192,6 @@ int my_dgesv(int n, double *a, double *b) {
     }
     #endif
     os_signpost_interval_end(log_handle, backsubstitution_id, "Backsubstitution loop");
-        
+    
     return 0;
 }
