@@ -51,6 +51,7 @@ int my_dgesv(int n, double *a, double *b) {
     os_signpost_id_t inner_pivot_search = os_signpost_id_generate(log_handle);
     os_signpost_id_t inner_swapping_id = os_signpost_id_generate(log_handle);
     os_signpost_id_t inner_elimination_id = os_signpost_id_generate(log_handle);
+    os_signpost_id_t matrix_coalesced_update_id = os_signpost_id_generate(log_handle);
     os_signpost_id_t backsubstitution_id = os_signpost_id_generate(log_handle);
     #endif
     
@@ -72,83 +73,132 @@ int my_dgesv(int n, double *a, double *b) {
     }
 
     os_signpost_interval_begin(log_handle, elimination_id, "Elimination loop");
-    for(int k=0; k<n; k++) {
+    
+    int block_size = 16;
+    for(int block=0; block<(n/block_size); block++) {
         
-        // MARK: - Pivot search
+        int block_start_k = block * block_size;
+        int block_end_k = (block + 1) * block_size;
         
-        os_signpost_interval_begin(log_handle, inner_pivot_search, "Inner pivot search loop");
-        big = 0.0;
-        // Search for pivot element only at or below the current row.
-        int end = k + 16;
-        if (end > n) {
-            end = n;
-        }
-        for(int i=k; i<end; i++) {
-            double temp = vv[i] * fabs(a[i*n + k]);
-            if (temp > big) {
-                big = temp;
-                imax = i;
-            }
-        }
-        os_signpost_interval_end(log_handle, inner_pivot_search, "Inner pivot search loop");
-                
-        // Check whether rows need to be swapped.
-        if (k != imax) {
-            os_signpost_interval_begin(log_handle, inner_swapping_id, "Inner swapping loop");
-            // Swap rows...
-            for(int j=0; j<n; j++) {
-                swap(&a[imax*n + j], &a[k*n + j]);
-                swap(&b[imax*n + j], &b[k*n + j]);
-            }
-            vv[imax] = vv[k];
-            os_signpost_interval_end(log_handle, inner_swapping_id, "Inner swapping loop");
-        }
-        
-        // MARK: - Elimination
-        
-        os_signpost_interval_begin(log_handle, inner_elimination_id, "Inner elimination loop");
-        
-        double pivot_value = a[k*n + k];
-        
-        // On Apple platforms, execute concurrently in all available cores using Apple's
-        // dispatch library.
-        #if defined(USE_APPLE_DISPATCH)
-        int number_of_threadgroups = (n - (k+1)) / dispatch_stride;
-        if ((n - (k+1)) % dispatch_stride != 0) {
-            number_of_threadgroups += 1;
-        }
-        dispatch_apply(number_of_threadgroups, concurrent_queue, ^(size_t idx) {
-            int start = k + 1 + idx * dispatch_stride;
-            int end = k + 1 + (idx + 1) * dispatch_stride;
+        for(int k = block_start_k; k < block_end_k; k++) {
+            
+            // MARK: - Pivot search
+            
+            os_signpost_interval_begin(log_handle, inner_pivot_search, "Inner pivot search loop");
+            big = 0.0;
+            // Search for pivot element only below the current row, up to the end of the block.
+            int end = k + 16;
             if (end > n) {
                 end = n;
             }
-            for (int i = start; i<end; i++) {
-                double dum = a[i*n + k] / pivot_value;
+            for(int i=k; i<end; i++) {
+                double temp = vv[i] * fabs(a[i*n + k]);
+                if (temp > big) {
+                    big = temp;
+                    imax = i;
+                }
+            }
+            os_signpost_interval_end(log_handle, inner_pivot_search, "Inner pivot search loop");
+            
+            // Check whether rows need to be swapped.
+            if (k != imax) {
+                os_signpost_interval_begin(log_handle, inner_swapping_id, "Inner swapping loop");
+                // Swap rows...
                 #pragma clang loop vectorize(enable) interleave(enable)
+                for(int j=k; j<n; j++) {
+                    swap(&a[imax*n + j], &a[k*n + j]);
+                }
+                #pragma clang loop vectorize(enable) interleave(enable)
+                for(int j=0; j<n; j++) {
+                    swap(&b[imax*n + j], &b[k*n + j]);
+                }
+                vv[imax] = vv[k];
+                os_signpost_interval_end(log_handle, inner_swapping_id, "Inner swapping loop");
+            }
+            
+            // MARK: - Elimination
+            // Update only the rows in this block and the next block
+            os_signpost_interval_begin(log_handle, inner_elimination_id, "Inner elimination loop");
+            
+            double pivot_value = a[k*n + k];
+            
+            int next_block_end_k = block_start_k + (2 * block_size);
+            if (next_block_end_k > n) {
+                next_block_end_k = n;
+            }
+            for (int i = k+1; i < next_block_end_k; i++) {
+                dum = a[i*n + k] / pivot_value;
                 for (int j = k+1; j<n; j++) {
                     a[i*n + j] -= a[k*n + j] * dum;
                 }
-                #pragma clang loop vectorize(enable) interleave(enable)
                 for (int j = 0; j<n; j++) {
                     b[i*n + j] -= b[k*n + j] * dum;
                 }
             }
-        });
-        // On non-Apple platforms, use OpenMP to parallelize the loop instead.
-        #else
-        #pragma omp parallel for
-        for (int i = k+1; i<n; i++) {
-            dum = a[i*n + k] / pivot_value;
-            for (int j = k+1; j<n; j++) {
-                a[i*n + j] -= a[k*n + j] * dum;
+            os_signpost_interval_end(log_handle, inner_elimination_id, "Inner elimination loop");
+        }
+        
+        // MARK: - Coalesced matrix update
+        // Update the rest of the matrix
+        os_signpost_interval_begin(log_handle, matrix_coalesced_update_id, "Matrix coalesced update");
+        int next_block_end_k = block_start_k + (2 * block_size);
+        if (next_block_end_k > n) {
+            next_block_end_k = n;
+        }
+        
+        #if defined(USE_APPLE_DISPATCH)
+        // On Apple platforms, execute concurrently in all available cores using Apple's
+        // dispatch library.
+        int number_of_threadgroups = (n - next_block_end_k) / dispatch_stride;
+        if ((n - next_block_end_k) % dispatch_stride != 0) {
+            number_of_threadgroups += 1;
+        }
+        dispatch_apply(number_of_threadgroups, concurrent_queue, ^(size_t idx) {
+            for(int k = block_start_k; k < block_end_k; k++) {
+                
+                double pivot_value = a[k*n + k];
+                
+                int start = next_block_end_k + idx * dispatch_stride;
+                int end = next_block_end_k + (idx + 1) * dispatch_stride;
+                if (end > n) {
+                    end = n;
+                }
+                
+                for (int i = start; i < end; i++) {
+                    double dum = a[i*n + k] / pivot_value;
+                    for (int j = k+1; j<n; j++) {
+                        a[i*n + j] -= a[k*n + j] * dum;
+                    }
+                    for (int j = 0; j<n; j++) {
+                        b[i*n + j] -= b[k*n + j] * dum;
+                    }
+                }
             }
-            for (int j = 0; j<n; j++) {
-                b[i*n + j] -= b[k*n + j] * dum;
+        });
+        #else
+        // On non-Apple platforms, use OpenMP to parallelize the loop instead.
+        for(int k = block_start_k; k < block_end_k; k++) {
+            
+            double pivot_value = a[k*n + k];
+            
+            int next_block_end_k = block_start_k + (2 * block_size);
+            if (next_block_end_k > n) {
+                next_block_end_k = n;
+            }
+            
+            #pragma omp parallel for
+            for (int i = next_block_end_k; i < n; i++) {
+                dum = a[i*n + k] / pivot_value;
+                for (int j = k+1; j<n; j++) {
+                    a[i*n + j] -= a[k*n + j] * dum;
+                }
+                for (int j = 0; j<n; j++) {
+                    b[i*n + j] -= b[k*n + j] * dum;
+                }
             }
         }
         #endif
-        os_signpost_interval_end(log_handle, inner_elimination_id, "Inner elimination loop");
+        os_signpost_interval_end(log_handle, matrix_coalesced_update_id, "Matrix coalesced update");
     }
     os_signpost_interval_end(log_handle, elimination_id, "Elimination loop");
     
