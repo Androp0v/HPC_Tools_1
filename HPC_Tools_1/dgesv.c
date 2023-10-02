@@ -40,7 +40,6 @@ int my_dgesv(int n, double *a, double *b) {
         big = 0.0;
         for (int j=0; j<n; j++) {
             if (ipiv[j] == 0) {
-                // Search for pivot element only below the current row
                 if (fabs(a[j*n + j]) >= big) {
                     big = fabs(a[j*n + j]);
                     imax = j;
@@ -65,7 +64,11 @@ int my_dgesv(int n, double *a, double *b) {
         // On Apple platforms, execute concurrently in all available cores
         // using Apple's dispatch library.
         #if defined(USE_APPLE_DISPATCH)
-        dispatch_apply((n / dispatch_stride) + 1, concurrentQueue, ^(size_t idx) {
+        int number_of_threads = n / dispatch_stride;
+        if (n % dispatch_stride != 0) {
+            number_of_threads += 1;
+        }
+        dispatch_apply(number_of_threads, concurrentQueue, ^(size_t idx) {
             int max = (idx + 1) * dispatch_stride;
             if (max > n) {
                 max = n;
@@ -86,6 +89,7 @@ int my_dgesv(int n, double *a, double *b) {
         #else
         #pragma omp parallel for
         for(int ll=0; ll<n; ll++) {
+            // Don't subtract from the pivot row...
             if (ll != imax) {
                 double dum = a[ll*n + imax];
                 a[ll*n + imax] = 0.0;
