@@ -75,10 +75,17 @@ int my_dgesv(int n, double *a, double *b) {
     os_signpost_interval_begin(log_handle, elimination_id, "Elimination loop");
     
     int block_size = 16;
-    for(int block=0; block<(n/block_size); block++) {
+    int block_end = n / block_size;
+    if (n % block_size != 0) {
+        block_end += 1;
+    }
+    for(int block = 0; block < block_end; block++) {
         
         int block_start_k = block * block_size;
         int block_end_k = (block + 1) * block_size;
+        if (block_end_k > n) {
+            block_end_k = n;
+        }
         
         for(int k = block_start_k; k < block_end_k; k++) {
             
@@ -139,33 +146,58 @@ int my_dgesv(int n, double *a, double *b) {
         }
         
         // MARK: - Coalesced matrix update
-        // Update the rest of the matrix
-        os_signpost_interval_begin(log_handle, matrix_coalesced_update_id, "Matrix coalesced update");
-        int next_block_end_k = block_start_k + (2 * block_size);
-        if (next_block_end_k > n) {
-            next_block_end_k = n;
-        }
-        
-        #if defined(USE_APPLE_DISPATCH)
-        // On Apple platforms, execute concurrently in all available cores using Apple's
-        // dispatch library.
-        int number_of_threadgroups = (n - next_block_end_k) / dispatch_stride;
-        if ((n - next_block_end_k) % dispatch_stride != 0) {
-            number_of_threadgroups += 1;
-        }
-        dispatch_apply(number_of_threadgroups, concurrent_queue, ^(size_t idx) {
+        // Update the rest of the matrix. No need to do it for the last 2 blocks, as those
+        // have been updates as part of the inner loop elimination.
+        if (block < (block_end - 2)) {
+            os_signpost_interval_begin(log_handle, matrix_coalesced_update_id, "Matrix coalesced update");
+            int next_block_end_k = block_start_k + (2 * block_size);
+            if (next_block_end_k > n) {
+                next_block_end_k = n;
+            }
+            
+            #if defined(USE_APPLE_DISPATCH)
+            // On Apple platforms, execute concurrently in all available cores using Apple's
+            // dispatch library.
+            int number_of_threadgroups = (n - next_block_end_k) / dispatch_stride;
+            if ((n - next_block_end_k) % dispatch_stride != 0) {
+                number_of_threadgroups += 1;
+            }
+            dispatch_apply(number_of_threadgroups, concurrent_queue, ^(size_t idx) {
+                for(int k = block_start_k; k < block_end_k; k++) {
+                    
+                    double pivot_value = a[k*n + k];
+                    
+                    int start = next_block_end_k + idx * dispatch_stride;
+                    int end = next_block_end_k + (idx + 1) * dispatch_stride;
+                    if (end > n) {
+                        end = n;
+                    }
+                    
+                    for (int i = start; i < end; i++) {
+                        double dum = a[i*n + k] / pivot_value;
+                        for (int j = k+1; j<n; j++) {
+                            a[i*n + j] -= a[k*n + j] * dum;
+                        }
+                        for (int j = 0; j<n; j++) {
+                            b[i*n + j] -= b[k*n + j] * dum;
+                        }
+                    }
+                }
+            });
+            #else
+            // On non-Apple platforms, use OpenMP to parallelize the loop instead.
             for(int k = block_start_k; k < block_end_k; k++) {
                 
                 double pivot_value = a[k*n + k];
                 
-                int start = next_block_end_k + idx * dispatch_stride;
-                int end = next_block_end_k + (idx + 1) * dispatch_stride;
-                if (end > n) {
-                    end = n;
+                int next_block_end_k = block_start_k + (2 * block_size);
+                if (next_block_end_k > n) {
+                    next_block_end_k = n;
                 }
                 
-                for (int i = start; i < end; i++) {
-                    double dum = a[i*n + k] / pivot_value;
+                #pragma omp parallel for
+                for (int i = next_block_end_k; i < n; i++) {
+                    dum = a[i*n + k] / pivot_value;
                     for (int j = k+1; j<n; j++) {
                         a[i*n + j] -= a[k*n + j] * dum;
                     }
@@ -174,31 +206,9 @@ int my_dgesv(int n, double *a, double *b) {
                     }
                 }
             }
-        });
-        #else
-        // On non-Apple platforms, use OpenMP to parallelize the loop instead.
-        for(int k = block_start_k; k < block_end_k; k++) {
-            
-            double pivot_value = a[k*n + k];
-            
-            int next_block_end_k = block_start_k + (2 * block_size);
-            if (next_block_end_k > n) {
-                next_block_end_k = n;
-            }
-            
-            #pragma omp parallel for
-            for (int i = next_block_end_k; i < n; i++) {
-                dum = a[i*n + k] / pivot_value;
-                for (int j = k+1; j<n; j++) {
-                    a[i*n + j] -= a[k*n + j] * dum;
-                }
-                for (int j = 0; j<n; j++) {
-                    b[i*n + j] -= b[k*n + j] * dum;
-                }
-            }
+            #endif
+            os_signpost_interval_end(log_handle, matrix_coalesced_update_id, "Matrix coalesced update");
         }
-        #endif
-        os_signpost_interval_end(log_handle, matrix_coalesced_update_id, "Matrix coalesced update");
     }
     os_signpost_interval_end(log_handle, elimination_id, "Elimination loop");
     
