@@ -3,7 +3,12 @@
 #include <math.h>
 #if defined(__APPLE__)
     #define USE_APPLE_DISPATCH
+    #define USE_SIGNPOSTING
     #include <dispatch/dispatch.h>
+    #if defined(USE_SIGNPOSTING)
+        #include <os/log.h>
+        #include <os/signpost.h>
+    #endif
 #endif
 
 #include "dgesv.h"
@@ -13,95 +18,299 @@ int *generate_int_vector(unsigned int length) {
   return vector;
 }
 
+double *generate_double_vector(unsigned int length) {
+  double *vector = (double *) malloc(sizeof(double) * length);
+  return vector;
+}
+
 void swap(double *pa, double *pb) {
     double temp = *pa;
     *pa = *pb;
     *pb = temp;
 }
 
+void print_matrix(int n, double *a) {
+    for (int i=0; i<n; i++) {
+        for(int j=0; j<n; j++){
+             printf("%lf     ", a[i*n + j]);
+        }
+        printf("\n");
+    }
+}
+
 int my_dgesv(int n, double *a, double *b) {
     
-    int *ipiv = generate_int_vector(n);
+    double *vv = generate_double_vector(n);
     
-    double big, dum, pivinv;
+    double big, dum, temp;
     int imax;
-        
-    #pragma clang loop vectorize(enable) interleave(enable)
-    for(int j=0; j<n; j++) {
-        ipiv[j] = 0;
-    }
     
     #if defined(USE_APPLE_DISPATCH)
-    dispatch_queue_t concurrentQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
+    dispatch_queue_t concurrent_queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
     int dispatch_stride = 64;
     #endif
     
-    for(int i=0; i<n; i++) {
+    #if defined(USE_SIGNPOSTING)
+    os_log_t log_handle = os_log_create("com.raulmonton.dgesv", OS_LOG_CATEGORY_POINTS_OF_INTEREST);
+    os_signpost_id_t elimination_id = os_signpost_id_generate(log_handle);
+    os_signpost_id_t inner_pivot_search = os_signpost_id_generate(log_handle);
+    os_signpost_id_t inner_swapping_id = os_signpost_id_generate(log_handle);
+    os_signpost_id_t inner_elimination_id = os_signpost_id_generate(log_handle);
+    os_signpost_id_t matrix_coalesced_update_id = os_signpost_id_generate(log_handle);
+    os_signpost_id_t triangular_elimination_id = os_signpost_id_generate(log_handle);
+    #endif
+    
+    for (int i = 0; i<n; i++) {
         big = 0.0;
-        for (int j=0; j<n; j++) {
-            if (ipiv[j] == 0) {
-                if (fabs(a[j*n + j]) >= big) {
-                    big = fabs(a[j*n + j]);
-                    imax = j;
-                }
+        for (int j = 0; j<n; j++) {
+            if ((temp = fabs(a[i*n + j])) > big) {
+                big = temp;
             }
         }
-        ++(ipiv[imax]);
-
-        if (a[imax*n + imax] == 0.0) {
+        
+        // If the pivot element is zero, either the matrix is singular or we fucked up.
+        if (big == 0.0) {
             printf("Singular matrix");
             exit(0);
         }
-        pivinv = 1.0 / a[imax*n + imax];
-        a[imax*n + imax] = 1.0;
         
-        #pragma clang loop vectorize(enable) interleave(enable)
-        for(int l=0; l<n; l++) {
-            a[imax*n + l] *= pivinv;
-            b[imax*n + l] *= pivinv;
+        vv[i] = 1.0 / big;
+    }
+    
+    #if defined(USE_SIGNPOSTING)
+    os_signpost_interval_begin(log_handle, elimination_id, "Elimination loop");
+    #endif
+    
+    int block_size = 16;
+    int block_end = n / block_size;
+    if (n % block_size != 0) {
+        block_end += 1;
+    }
+    for(int block = 0; block < block_end; block++) {
+        
+        int block_start_k = block * block_size;
+        int block_end_k = (block + 1) * block_size;
+        if (block_end_k > n) {
+            block_end_k = n;
         }
-                
-        // On Apple platforms, execute concurrently in all available cores
-        // using Apple's dispatch library.
-        #if defined(USE_APPLE_DISPATCH)
-        int number_of_threads = n / dispatch_stride;
-        if (n % dispatch_stride != 0) {
-            number_of_threads += 1;
-        }
-        dispatch_apply(number_of_threads, concurrentQueue, ^(size_t idx) {
-            int max = (idx + 1) * dispatch_stride;
-            if (max > n) {
-                max = n;
+        
+        for(int k = block_start_k; k < block_end_k; k++) {
+            
+            // MARK: - Pivot search
+            
+            #if defined(USE_SIGNPOSTING)
+            os_signpost_interval_begin(log_handle, inner_pivot_search, "Inner pivot search loop");
+            #endif
+            big = 0.0;
+            // Search for pivot element only below the current row, up to the end of the block.
+            int end = k + 16;
+            if (end > n) {
+                end = n;
             }
-            for(int ll = idx * dispatch_stride; ll<max; ll++) {
-                if (ll != imax) {
-                    double dum = a[ll*n + imax];
-                    a[ll*n + imax] = 0.0;
-                    #pragma clang loop vectorize(enable) interleave(enable)
-                    for (int l=0; l<n; l++) {
-                        a[ll*n + l] -= a[imax*n + l] * dum;
-                        b[ll*n + l] -= b[imax*n + l] * dum;
+            for(int i=k; i<end; i++) {
+                double temp = vv[i] * fabs(a[i*n + k]);
+                if (temp > big) {
+                    big = temp;
+                    imax = i;
+                }
+            }
+            #if defined(USE_SIGNPOSTING)
+            os_signpost_interval_end(log_handle, inner_pivot_search, "Inner pivot search loop");
+            #endif
+            
+            // Check whether rows need to be swapped.
+            if (k != imax) {
+                #if defined(USE_SIGNPOSTING)
+                os_signpost_interval_begin(log_handle, inner_swapping_id, "Inner swapping loop");
+                #endif
+                // Swap rows...
+                #pragma clang loop vectorize(enable) interleave(enable)
+                for(int j=k; j<n; j++) {
+                    swap(&a[imax*n + j], &a[k*n + j]);
+                }
+                #pragma clang loop vectorize(enable) interleave(enable)
+                for(int j=0; j<n; j++) {
+                    swap(&b[imax*n + j], &b[k*n + j]);
+                }
+                vv[imax] = vv[k];
+                #if defined(USE_SIGNPOSTING)
+                os_signpost_interval_end(log_handle, inner_swapping_id, "Inner swapping loop");
+                #endif
+            }
+            
+            // MARK: - Elimination
+            // Update only the rows in this block and the next block
+            #if defined(USE_SIGNPOSTING)
+            os_signpost_interval_begin(log_handle, inner_elimination_id, "Inner elimination loop");
+            #endif
+            
+            double pivot_value = a[k*n + k];
+            
+            int next_block_end_k = block_start_k + (2 * block_size);
+            if (next_block_end_k > n) {
+                next_block_end_k = n;
+            }
+            for (int i = k+1; i < next_block_end_k; i++) {
+                dum = a[i*n + k] / pivot_value;
+                for (int j = k+1; j<n; j++) {
+                    a[i*n + j] -= a[k*n + j] * dum;
+                }
+                for (int j = 0; j<n; j++) {
+                    b[i*n + j] -= b[k*n + j] * dum;
+                }
+            }
+            #if defined(USE_SIGNPOSTING)
+            os_signpost_interval_end(log_handle, inner_elimination_id, "Inner elimination loop");
+            #endif
+        }
+        
+        // MARK: - Coalesced matrix update
+        // Update the rest of the matrix. No need to do it for the last 2 blocks, as those
+        // have been updates as part of the inner loop elimination.
+        if (block < (block_end - 2)) {
+            #if defined(USE_SIGNPOSTING)
+            os_signpost_interval_begin(log_handle, matrix_coalesced_update_id, "Matrix coalesced update");
+            #endif
+            int next_block_end_k = block_start_k + (2 * block_size);
+            if (next_block_end_k > n) {
+                next_block_end_k = n;
+            }
+            
+            #if defined(USE_APPLE_DISPATCH)
+            // On Apple platforms, execute concurrently in all available cores using Apple's
+            // dispatch library.
+            int number_of_threads = (n - next_block_end_k) / dispatch_stride;
+            if ((n - next_block_end_k) % dispatch_stride != 0) {
+                number_of_threads += 1;
+            }
+            dispatch_apply(number_of_threads, concurrent_queue, ^(size_t idx) {
+                for(int k = block_start_k; k < block_end_k; k++) {
+                    
+                    double pivot_value = a[k*n + k];
+                    
+                    int start = next_block_end_k + idx * dispatch_stride;
+                    int end = next_block_end_k + (idx + 1) * dispatch_stride;
+                    if (end > n) {
+                        end = n;
+                    }
+                    
+                    for (int i = start; i < end; i++) {
+                        double dum = a[i*n + k] / pivot_value;
+                        for (int j = k+1; j<n; j++) {
+                            a[i*n + j] -= a[k*n + j] * dum;
+                        }
+                        for (int j = 0; j<n; j++) {
+                            b[i*n + j] -= b[k*n + j] * dum;
+                        }
+                    }
+                }
+            });
+            #else
+            // On non-Apple platforms, use OpenMP to parallelize the loop instead.
+            for(int k = block_start_k; k < block_end_k; k++) {
+                
+                double pivot_value = a[k*n + k];
+                
+                int next_block_end_k = block_start_k + (2 * block_size);
+                if (next_block_end_k > n) {
+                    next_block_end_k = n;
+                }
+                
+                #pragma omp parallel for
+                for (int i = next_block_end_k; i < n; i++) {
+                    dum = a[i*n + k] / pivot_value;
+                    for (int j = k+1; j<n; j++) {
+                        a[i*n + j] -= a[k*n + j] * dum;
+                    }
+                    for (int j = 0; j<n; j++) {
+                        b[i*n + j] -= b[k*n + j] * dum;
                     }
                 }
             }
-        });
-        // On non-Apple platforms, use OpenMP to parallelize the loop instead.
-        #else
-        #pragma omp parallel for
-        for(int ll=0; ll<n; ll++) {
-            // Don't subtract from the pivot row...
-            if (ll != imax) {
-                double dum = a[ll*n + imax];
-                a[ll*n + imax] = 0.0;
-                #pragma clang loop vectorize(enable) interleave(enable)
-                for (int l=0; l<n; l++) {
-                    a[ll*n + l] -= a[imax*n + l] * dum;
-                    b[ll*n + l] -= b[imax*n + l] * dum;
+            #endif
+            
+            #if defined(USE_SIGNPOSTING)
+            os_signpost_interval_end(log_handle, matrix_coalesced_update_id, "Matrix coalesced update");
+            #endif
+        }
+    }
+    #if defined(USE_SIGNPOSTING)
+    os_signpost_interval_end(log_handle, elimination_id, "Elimination loop");
+    #endif
+        
+    // MARK: - Elimination up
+    
+    #if defined(USE_SIGNPOSTING)
+    os_signpost_interval_begin(log_handle, triangular_elimination_id, "Triangular elimination loop");
+    #endif
+    #if defined(USE_APPLE_DISPATCH)
+    // On Apple platforms, execute concurrently in all available cores using Apple's
+    // dispatch library.
+    for (int k = 0; k < n; k++) {
+        double pivot_value = a[k*n + k];
+        int number_of_threads = k / dispatch_stride;
+        if (k % dispatch_stride != 0) {
+            number_of_threads += 1;
+        }
+        dispatch_apply(number_of_threads, concurrent_queue, ^(size_t idx) {
+            int start = idx * dispatch_stride;
+            int end = (idx + 1) * dispatch_stride;
+            if (end > k) {
+                end = k;
+            }
+            for (int i = start; i < end; i++) {
+                double dum = a[i*n + k] / pivot_value;
+                for (int j = k; j<n; j++) {
+                    a[i*n + j] -= a[k*n + j] * dum;
+                }
+                for (int j = 0; j<n; j++) {
+                    b[i*n + j] -= b[k*n + j] * dum;
                 }
             }
-        }
-        #endif
+        });
     }
-        
+    
+    int number_of_threads = n / dispatch_stride;
+    if (n % dispatch_stride != 0) {
+        number_of_threads += 1;
+    }
+    dispatch_apply(number_of_threads, concurrent_queue, ^(size_t idx) {
+        int start = idx * dispatch_stride;
+        int end = (idx + 1) * dispatch_stride;
+        if (end > n) {
+            end = n;
+        }
+        for (int i = start; i < end; i ++) {
+            double diagonal = a[i*n + i];
+            for (int j = 0; j < n; j++) {
+                b[i*n + j] /= diagonal;
+            }
+        }
+    });
+    #else
+    // On non-Apple platforms, use OpenMP to parallelize the loop instead.
+    for (int k = 0; k < n; k++) {
+        double pivot_value = a[k*n + k];
+        for (int i = 0; i < k; i++) {
+            dum = a[i*n + k] / pivot_value;
+            for (int j = k; j<n; j++) {
+                a[i*n + j] -= a[k*n + j] * dum;
+            }
+            for (int j = 0; j<n; j++) {
+                b[i*n + j] -= b[k*n + j] * dum;
+            }
+        }
+    }
+    for (int i = 0; i < n; i ++) {
+        double diagonal = a[i*n + i];
+        for (int j = 0; j < n; j++) {
+            b[i*n + j] /= diagonal;
+        }
+    }
+    #endif
+    #if defined(USE_SIGNPOSTING)
+    os_signpost_interval_end(log_handle, triangular_elimination_id, "Triangular elimination loop");
+    #endif
+
     return 0;
 }

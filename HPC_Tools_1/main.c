@@ -56,6 +56,15 @@ unsigned int check_result(double *bref, double *b, unsigned int size) {
     return 1;
 }
 
+void print_matrix_main(int n, double *a) {
+    for (int i=0; i<n; i++) {
+        for(int j=0; j<n; j++){
+             printf("%lf     ", a[i*n + j]);
+        }
+        printf("\n");
+    }
+}
+
 int main(int argc, char *argv[]) {
     
     if (argc < 2) {
@@ -87,7 +96,7 @@ int main(int argc, char *argv[]) {
     
     timestamp(&now);
     printf("Time taken by Lapacke dgesv: %ld ms\n", diff_milli(&start, &now));
-
+        
     //
     // Using your own solver based on Gauss or Gauss-Jordan elimination
     //
