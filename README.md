@@ -1,7 +1,7 @@
 # Gaussian Elimination
 This repo implements Gaussian elimination in C. Originally based in _Numerical Recipes in C_, Chapter 2.1, with several changes:
 - This version uses the (much faster) partial pivoting, discussed in Chapter 2.1.2 [1], instead of the full-pivoting of the algorithm in the book.
-- This version implements a _delayed updates_ mechanism, based on the suggestions in [2].
+- This version implements a _delayed updates_ mechanism, inspired by the suggestions in [2].
 
 # Results
 On a MacBook Pro with an M1 Pro CPU (8P cores + 2E cores):
@@ -11,6 +11,11 @@ On a MacBook Pro with an M1 Pro CPU (8P cores + 2E cores):
 | 1024x1024   | 35          | 129       | 3.6x           |
 | 2048x2048   | 175         | 800       | 4.6x           |
 | 4096x4096   | 1600        | 6500      | 4.1x           |
+
+## Profiling
+See below a trace captured using Xcode Instruments, which has been extremely useful in both diagnosing the bottlenecks in the algorithm's execution and estimating the CPU utilization.
+
+![Instruments-Trace](Figures/Xcode-Instruments-Trace.png)
 
 ## Tools
 Compiled using LLVM + Clang 14.0.3 (Apple's version, bundled with Xcode). Because of that, code is annotated with `#pragma clang loop...` instead of `#pragma omp simd...` (Apple's Clang does not have OpenMP support). Not that it matters: decompiling the binary shows that the code uses ARM's vector extensions even if you don't include the compiler hints.
