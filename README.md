@@ -5,10 +5,12 @@ This repo implements Gaussian elimination in C. Originally based in _Numerical R
 
 # Results
 On a MacBook Pro with an M1 Pro CPU (8P cores + 2E cores):
-- For a 512x512 matrix, the LAPACK version executes in ~11 ms while this version takes ~35 ms (ours is 3.8x slower). 
-- For a 1024x1024 matrix, the LAPACK version executes in ~35 ms while this version takes ~133 ms (ours is 4.0x slower). 
-- For a 2048x2048 matrix, the LAPACK version executes in ~180 ms while this version takes ~825 ms (ours is 4.5x slower).
-- For a 2048x2048 matrix, the LAPACK version executes in ~1600 ms while this version takes ~8500 ms (ours is 5.3x slower).
+| Matrix size | LAPACK (ms) | Ours (ms) | Ours slower by |
+| ----------- | ----------- | --------- | -------------- |
+| 512x512     | 11          | 35        | 3.8x           |
+| 1024x1024   | 35          | 133       | 4.0x           |
+| 2048x2048   | 180         | 825       | 4.5x           |
+| 4096x4096   | 1600        | 8500      | 5.3x           |
 
 ## Observations
 Due to numerical inacurracies inherent to the algorithms, for big matrices `check_result` may return `Result is wrong!` unless a bigger `epsilon` is chosen (`1e-3` seems to work fine for 4096x406 matrices).
