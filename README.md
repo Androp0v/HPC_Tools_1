@@ -7,13 +7,10 @@ This repo implements Gaussian elimination in C. Originally based in _Numerical R
 On a MacBook Pro with an M1 Pro CPU (8P cores + 2E cores):
 | Matrix size | LAPACK (ms) | Ours (ms) | Ours slower by |
 | ----------- | ----------- | --------- | -------------- |
-| 512x512     | 11          | 35        | 3.8x           |
-| 1024x1024   | 35          | 133       | 4.0x           |
-| 2048x2048   | 180         | 825       | 4.5x           |
-| 4096x4096   | 1600        | 8500      | 5.3x           |
-
-## Observations
-Due to numerical inacurracies inherent to the algorithms, for big matrices `check_result` may return `Result is wrong!` unless a bigger `epsilon` is chosen (`1e-3` seems to work fine for 4096x406 matrices).
+| 512x512     | 11          | 30        | 2.7x           |
+| 1024x1024   | 35          | 129       | 3.6x           |
+| 2048x2048   | 175         | 800       | 4.6x           |
+| 4096x4096   | 1600        | 6500      | 4.1x           |
 
 ## Tools
 Compiled using LLVM + Clang 14.0.3 (Apple's version, bundled with Xcode). Because of that, code is annotated with `#pragma clang loop...` instead of `#pragma omp simd...` (Apple's Clang does not have OpenMP support). Not that it matters: decompiling the binary shows that the code uses ARM's vector extensions even if you don't include the compiler hints.

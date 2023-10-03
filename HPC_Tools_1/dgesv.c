@@ -5,6 +5,7 @@
     #define USE_APPLE_DISPATCH
     #define USE_SIGNPOSTING
     #include <dispatch/dispatch.h>
+    #include <pthread.h>
     #if defined(USE_SIGNPOSTING)
         #include <os/log.h>
         #include <os/signpost.h>
@@ -47,7 +48,8 @@ int my_dgesv(int n, double *a, double *b) {
     
     #if defined(USE_APPLE_DISPATCH)
     dispatch_queue_t concurrent_queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
-    int dispatch_stride = 64;
+    int dispatch_stride = 16;
+    dispatch_group_t coalesced_matrix_group = dispatch_group_create();
     #endif
     
     #if defined(USE_SIGNPOSTING)
@@ -56,6 +58,7 @@ int my_dgesv(int n, double *a, double *b) {
     os_signpost_id_t inner_pivot_search = os_signpost_id_generate(log_handle);
     os_signpost_id_t inner_swapping_id = os_signpost_id_generate(log_handle);
     os_signpost_id_t inner_elimination_id = os_signpost_id_generate(log_handle);
+    os_signpost_id_t matrix_coalesced_next_block_update_id = os_signpost_id_generate(log_handle);
     os_signpost_id_t matrix_coalesced_update_id = os_signpost_id_generate(log_handle);
     os_signpost_id_t triangular_elimination_id = os_signpost_id_generate(log_handle);
     #endif
@@ -94,6 +97,15 @@ int my_dgesv(int n, double *a, double *b) {
             block_end_k = n;
         }
         
+        int next_block_end_k = block_start_k + (2 * block_size);
+        if (next_block_end_k > n) {
+            next_block_end_k = n;
+        }
+        int next_next_block_end_k = block_start_k + (3 * block_size);
+        if (next_next_block_end_k > n) {
+            next_next_block_end_k = n;
+        }
+        
         for(int k = block_start_k; k < block_end_k; k++) {
             
             // MARK: - Pivot search
@@ -102,8 +114,9 @@ int my_dgesv(int n, double *a, double *b) {
             os_signpost_interval_begin(log_handle, inner_pivot_search, "Inner pivot search loop");
             #endif
             big = 0.0;
-            // Search for pivot element only below the current row, up to the end of the block.
-            int end = k + 16;
+            // Search for pivot element only below the current row, on the current block or the next
+            // one, but not any further.
+            int end = k + block_size;
             if (end > n) {
                 end = n;
             }
@@ -118,11 +131,13 @@ int my_dgesv(int n, double *a, double *b) {
             os_signpost_interval_end(log_handle, inner_pivot_search, "Inner pivot search loop");
             #endif
             
+            // MARK: - Row swapping
             // Check whether rows need to be swapped.
-            if (k != imax) {
+            if (k!=imax) {
                 #if defined(USE_SIGNPOSTING)
                 os_signpost_interval_begin(log_handle, inner_swapping_id, "Inner swapping loop");
                 #endif
+                
                 // Swap rows...
                 #pragma clang loop vectorize(enable) interleave(enable)
                 for(int j=k; j<n; j++) {
@@ -132,7 +147,9 @@ int my_dgesv(int n, double *a, double *b) {
                 for(int j=0; j<n; j++) {
                     swap(&b[imax*n + j], &b[k*n + j]);
                 }
+                
                 vv[imax] = vv[k];
+
                 #if defined(USE_SIGNPOSTING)
                 os_signpost_interval_end(log_handle, inner_swapping_id, "Inner swapping loop");
                 #endif
@@ -146,10 +163,6 @@ int my_dgesv(int n, double *a, double *b) {
             
             double pivot_value = a[k*n + k];
             
-            int next_block_end_k = block_start_k + (2 * block_size);
-            if (next_block_end_k > n) {
-                next_block_end_k = n;
-            }
             for (int i = k+1; i < next_block_end_k; i++) {
                 dum = a[i*n + k] / pivot_value;
                 for (int j = k+1; j<n; j++) {
@@ -164,60 +177,26 @@ int my_dgesv(int n, double *a, double *b) {
             #endif
         }
         
-        // MARK: - Coalesced matrix update
-        // Update the rest of the matrix. No need to do it for the last 2 blocks, as those
-        // have been updates as part of the inner loop elimination.
+        // MARK: - Update the rest of the matrix
+        
         if (block < (block_end - 2)) {
-            #if defined(USE_SIGNPOSTING)
-            os_signpost_interval_begin(log_handle, matrix_coalesced_update_id, "Matrix coalesced update");
-            #endif
-            int next_block_end_k = block_start_k + (2 * block_size);
-            if (next_block_end_k > n) {
-                next_block_end_k = n;
-            }
+            
+            // MARK: - Next block update
+            // The previous big loop sees two blocks ahead. Here, we update the 3rd block.
             
             #if defined(USE_APPLE_DISPATCH)
-            // On Apple platforms, execute concurrently in all available cores using Apple's
-            // dispatch library.
-            int number_of_threads = (n - next_block_end_k) / dispatch_stride;
-            if ((n - next_block_end_k) % dispatch_stride != 0) {
-                number_of_threads += 1;
-            }
-            dispatch_apply(number_of_threads, concurrent_queue, ^(size_t idx) {
-                for(int k = block_start_k; k < block_end_k; k++) {
-                    
-                    double pivot_value = a[k*n + k];
-                    
-                    int start = next_block_end_k + idx * dispatch_stride;
-                    int end = next_block_end_k + (idx + 1) * dispatch_stride;
-                    if (end > n) {
-                        end = n;
-                    }
-                    
-                    for (int i = start; i < end; i++) {
-                        double dum = a[i*n + k] / pivot_value;
-                        for (int j = k+1; j<n; j++) {
-                            a[i*n + j] -= a[k*n + j] * dum;
-                        }
-                        for (int j = 0; j<n; j++) {
-                            b[i*n + j] -= b[k*n + j] * dum;
-                        }
-                    }
-                }
-            });
-            #else
-            // On non-Apple platforms, use OpenMP to parallelize the loop instead.
+            // This is essentially a memory fence, that waits until the coalesced matrix
+            // update has finished updating the trailing blocks of the matrix.
+            dispatch_group_wait(coalesced_matrix_group, DISPATCH_TIME_FOREVER);
+            #endif
+            
+            #if defined(USE_SIGNPOSTING)
+            os_signpost_interval_begin(log_handle, matrix_coalesced_next_block_update_id, "Next block coalesced update");
+            #endif
             for(int k = block_start_k; k < block_end_k; k++) {
-                
                 double pivot_value = a[k*n + k];
-                
-                int next_block_end_k = block_start_k + (2 * block_size);
-                if (next_block_end_k > n) {
-                    next_block_end_k = n;
-                }
-                
                 #pragma omp parallel for
-                for (int i = next_block_end_k; i < n; i++) {
+                for (int i = next_block_end_k; i < next_next_block_end_k; i++) {
                     dum = a[i*n + k] / pivot_value;
                     for (int j = k+1; j<n; j++) {
                         a[i*n + j] -= a[k*n + j] * dum;
@@ -227,11 +206,80 @@ int my_dgesv(int n, double *a, double *b) {
                     }
                 }
             }
+            #if defined(USE_SIGNPOSTING)
+            os_signpost_interval_end(log_handle, matrix_coalesced_next_block_update_id, "Next block coalesced update");
             #endif
             
-            #if defined(USE_SIGNPOSTING)
-            os_signpost_interval_end(log_handle, matrix_coalesced_update_id, "Matrix coalesced update");
-            #endif
+            // MARK: - Coalesced matrix update
+            // Update the rest of the matrix. The elimination inner loop updates the current and
+            // next blocks. The previous code segment updates the 3rd code block. Here, we update
+            // from the 4th block until the end of the matrix.
+            if (block < (block_end - 3)) {
+                
+                #if defined(USE_SIGNPOSTING)
+                os_signpost_interval_begin(log_handle, matrix_coalesced_update_id, "Matrix coalesced update");
+                #endif
+                
+                #if defined(USE_APPLE_DISPATCH)
+                // On Apple platforms, execute concurrently in all available cores using Apple's
+                // dispatch library.
+                
+                int number_of_threads = (n - next_next_block_end_k) / dispatch_stride;
+                if ((n - next_next_block_end_k) % dispatch_stride != 0) {
+                    number_of_threads += 1;
+                }
+                
+                // The function dispatch_group_async schedules the code block inside asynchronously:
+                // the code can continue executing at the call site, going to the next iteration of
+                // the loop, while the code block inside executes in the background.
+                // Then, if we need to touch any part of the matrix that has a data dependency on
+                // this block, we'll call dispatch_group_wait to block execution until this block
+                // has finished.
+                dispatch_group_async(coalesced_matrix_group, concurrent_queue, ^{
+                    dispatch_apply(number_of_threads, concurrent_queue, ^(size_t idx) {
+                        for(int k = block_start_k; k < block_end_k; k++) {
+                            double pivot_value = a[k*n + k];
+                            
+                            int start = next_next_block_end_k + idx * dispatch_stride;
+                            int end = next_next_block_end_k + (idx + 1) * dispatch_stride;
+                            if (end > n) {
+                                end = n;
+                            }
+                            
+                            for (int i = start; i < end; i++) {
+                                double dum = a[i*n + k] / pivot_value;
+                                for (int j = k+1; j<n; j++) {
+                                    a[i*n + j] -= a[k*n + j] * dum;
+                                }
+                                for (int j = 0; j<n; j++) {
+                                    b[i*n + j] -= b[k*n + j] * dum;
+                                }
+                            }
+                        }
+                    });
+                    #if defined(USE_SIGNPOSTING)
+                    os_signpost_interval_end(log_handle, matrix_coalesced_update_id, "Matrix coalesced update");
+                    #endif
+                });
+                #else
+                // On non-Apple platforms, use OpenMP to parallelize the loop instead.
+                for(int k = block_start_k; k < block_end_k; k++) {
+                    
+                    double pivot_value = a[k*n + k];
+
+                    #pragma omp parallel for
+                    for (int i = next_next_block_end_k; i < n; i++) {
+                        dum = a[i*n + k] / pivot_value;
+                        for (int j = k+1; j<n; j++) {
+                            a[i*n + j] -= a[k*n + j] * dum;
+                        }
+                        for (int j = 0; j<n; j++) {
+                            b[i*n + j] -= b[k*n + j] * dum;
+                        }
+                    }
+                }
+                #endif
+            }
         }
     }
     #if defined(USE_SIGNPOSTING)
@@ -291,6 +339,7 @@ int my_dgesv(int n, double *a, double *b) {
     // On non-Apple platforms, use OpenMP to parallelize the loop instead.
     for (int k = 0; k < n; k++) {
         double pivot_value = a[k*n + k];
+        #pragma omp parallel for
         for (int i = 0; i < k; i++) {
             dum = a[i*n + k] / pivot_value;
             for (int j = k; j<n; j++) {
